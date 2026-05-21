@@ -582,6 +582,11 @@ with middle_panel:
         video_sources = [
             (tr("Pexels"), "pexels"),
             (tr("Pixabay"), "pixabay"),
+            (tr("Flux-1-Schnell"), "flux-1-schnell"),
+            (tr("HappyHorse-1.0-t2v"), "happyhorse-1.0-t2v"),
+            (tr("HappyHorse-1.0-i2v"), "happyhorse-1.0-i2v"),
+            (tr("Wan2.7-i2v"), "wan2.7-i2v"),
+            (tr("Doubao-Seedance-1.5-Pro"), "volcengine/doubao-seedance-1.5-pro"),
             (tr("Local file"), "local"),
             (tr("TikTok"), "douyin"),
             (tr("Bilibili"), "bilibili"),
@@ -589,9 +594,12 @@ with middle_panel:
         ]
 
         saved_video_source_name = config.app.get("video_source", "pexels")
-        saved_video_source_index = [v[1] for v in video_sources].index(
-            saved_video_source_name
-        )
+        try:
+            saved_video_source_index = [v[1] for v in video_sources].index(
+                saved_video_source_name
+            )
+        except ValueError:
+            saved_video_source_index = 0
 
         selected_index = st.selectbox(
             tr("Video Source"),
@@ -676,6 +684,7 @@ with middle_panel:
             ("azure-tts-v2", "Azure TTS V2"),
             ("siliconflow", "SiliconFlow TTS"),
             ("gemini-tts", "Google Gemini TTS"),
+            ("openai-tts", "OpenAI / MaaS TTS"),
         ]
 
         # 获取保存的TTS服务器，默认为v1
@@ -705,6 +714,9 @@ with middle_panel:
         elif selected_tts_server == "gemini-tts":
             # 获取Gemini TTS的声音列表
             filtered_voices = voice.get_gemini_voices()
+        elif selected_tts_server == "openai-tts":
+            # 获取OpenAI TTS的声音列表
+            filtered_voices = voice.get_openai_voices()
         else:
             # 获取Azure的声音列表
             all_voices = voice.get_all_azure_voices(filter_locals=None)
@@ -1050,7 +1062,8 @@ if start_button:
         scroll_to_bottom()
         st.stop()
 
-    if params.video_source not in ["pexels", "pixabay", "local"]:
+    ai_video_sources = ["happyhorse-1.0-t2v", "happyhorse-1.0-i2v", "wan2.7-i2v", "volcengine/doubao-seedance-1.5-pro"]
+    if params.video_source not in ["pexels", "pixabay", "local", "flux-1-schnell"] + ai_video_sources:
         st.error(tr("Please Select a Valid Video Source"))
         scroll_to_bottom()
         st.stop()
@@ -1062,6 +1075,11 @@ if start_button:
 
     if params.video_source == "pixabay" and not config.app.get("pixabay_api_keys", ""):
         st.error(tr("Please Enter the Pixabay API Key"))
+        scroll_to_bottom()
+        st.stop()
+
+    if params.video_source in (["flux-1-schnell"] + ai_video_sources) and not config.app.get("openai_api_key", ""):
+        st.error(tr("Please Enter the LLM API Key"))
         scroll_to_bottom()
         st.stop()
 

@@ -1,0 +1,21 @@
+{
+  "name": "remotion-overlays",
+  "version": "1.0.0",
+  "description": "Remotion CTA overlay renderer for promo video batch generation",
+  "scripts": {
+    "dev": "remotion studio",
+    "render": "remotion render",
+    "build": "remotion bundle"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.259",
+    "@remotion/player": "4.0.259",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "4.0.259"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "typescript": "^5.7.0"
+  }
+}

@@ -334,3 +334,83 @@ class VideoMaterialUploadResponse(BaseResponse):
                 },
             },
         }
+
+
+# ──────────────────── Promo / Batch API Models ────────────────────
+
+class PromoAnalyzeRequest(BaseModel):
+    """素材分析请求"""
+    material_ids: List[str]
+    product_name: str
+    product_description: str = ""
+
+
+class PromoOptimizeScriptRequest(BaseModel):
+    """口播稿优化请求"""
+    raw_script: str
+    product_name: str
+    product_description: str = ""
+    livestream_purpose: str = ""
+    target_language: str = ""  # 目标语言，可选：English, Japanese, Korean等
+
+
+class PromoGenerateVariantsRequest(BaseModel):
+    """风格变体生成请求"""
+    optimized_script: str
+    product_name: str
+    styles: Optional[List[str]] = None
+    count: int = 5
+    target_language: str = ""
+
+
+class PromoDiagnoseRequest(BaseModel):
+    """口播稿爆款雷达打分诊断请求"""
+    script: str
+    product_name: str = ""
+
+
+class PromoBatchRequest(BaseModel):
+    """批量视频生成请求"""
+    product_name: str
+    raw_script: str = ""
+    product_description: str = ""
+    livestream_purpose: str = ""
+    variants: Optional[List[dict]] = None
+    material_ids: Optional[List[str]] = None
+    video_aspect: Optional[VideoAspect] = VideoAspect.portrait.value
+    video_clip_duration: int = 5
+    voice_names: Optional[List[str]] = None
+    subtitle_enabled: bool = True
+    font_name: str = "STHeitiMedium.ttc"
+    text_fore_color: str = "#FFFFFF"
+    font_size: int = 60
+    bgm_type: str = "random"
+    bgm_file: str = ""
+    cta_enabled: bool = True
+    max_concurrent: int = 3
+    motion_intensity: float = 1.0
+    cta_config: Optional[dict] = None
+    webhook_url: Optional[str] = None
+
+
+class PromoSegmentUpdateRequest(BaseModel):
+    """分镜段落局部微调请求"""
+    new_segment_data: dict
+
+
+class PromoRemuxRequest(BaseModel):
+    """极速热合并字幕或BGM请求"""
+    new_subtitle_content: Optional[str] = None
+    new_bgm_file: Optional[str] = None
+    bgm_volume: Optional[float] = None
+
+
+class PromoResponse(BaseResponse):
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": 200,
+                "message": "success",
+                "data": {"batch_id": "abc-123"},
+            },
+        }

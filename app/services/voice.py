@@ -1136,6 +1136,23 @@ def is_gemini_voice(voice_name: str):
     return voice_name.startswith("gemini:")
 
 
+def is_openai_voice(voice_name: str):
+    """检查是否是OpenAI TTS的声音"""
+    return voice_name.startswith("openai:")
+
+
+def get_openai_voices() -> list[str]:
+    """获取OpenAI TTS的声音列表"""
+    return [
+        "openai:qwen3-tts-flash:alloy-Female",
+        "openai:qwen3-tts-flash:echo-Male",
+        "openai:qwen3-tts-flash:fable-Male",
+        "openai:qwen3-tts-flash:onyx-Male",
+        "openai:qwen3-tts-flash:nova-Female",
+        "openai:qwen3-tts-flash:shimmer-Female",
+    ]
+
+
 def tts(
     text: str,
     voice_name: str,
@@ -1173,6 +1190,15 @@ def tts(
             return gemini_tts(text, voice, voice_rate, voice_file, voice_volume)
         else:
             logger.error(f"Invalid gemini voice name format: {voice_name}")
+    elif is_openai_voice(voice_name):
+        parts = voice_name.split(":")
+        if len(parts) >= 3:
+            model = parts[1]
+            voice_with_gender = parts[2]
+            voice = voice_with_gender.split("-")[0]
+            return openai_tts(text, model, voice, voice_rate, voice_file, voice_volume)
+        else:
+            logger.error(f"Invalid openai voice name format: {voice_name}")
             return None
     return azure_tts_v1(text, voice_name, voice_rate, voice_file)
 
@@ -1636,6 +1662,129 @@ def siliconflow_tts(
                 )
         except Exception as e:
             logger.error(f"siliconflow tts failed: {str(e)}")
+
+    return None
+
+
+def openai_tts(
+    text: str,
+    model: str,
+    voice: str,
+    voice_rate: float,
+    voice_file: str,
+    voice_volume: float = 1.0,
+) -> Union[SubMaker, None]:
+    """
+    使用 OpenAI 兼容 API / MaaS 平台生成语音 (TTS)
+    """
+    text = text.strip()
+    api_key = config.app.get("openai_api_key", "")
+    base_url = config.app.get("openai_base_url", "https://api.openai.com/v1")
+
+    if not api_key:
+        logger.error("openai_api_key is not set in config.toml")
+        return None
+
+    # 去除 base_url 尾部的斜杠并拼装语音合成端点
+    base_url = base_url.rstrip("/")
+    url = f"{base_url}/audio/speech"
+
+    # 构造要尝试的 URL 列表，如果 primary URL 失败，使用备用/直接域名 fallback
+    urls_to_try = [url]
+    if "api-gateway.fusionxlink.com" in url:
+        fallback_url = url.replace("api-gateway.fusionxlink.com", "api.aiapbot.com")
+        if fallback_url not in urls_to_try:
+            urls_to_try.append(fallback_url)
+    elif "api.aiapbot.com" in url:
+        fallback_url = url.replace("api.aiapbot.com", "api-gateway.fusionxlink.com")
+        if fallback_url not in urls_to_try:
+            urls_to_try.append(fallback_url)
+
+    payload = {
+        "model": model,
+        "input": text,
+        "voice": voice,
+        "response_format": "mp3",
+    }
+
+    # OpenAI API 支持 0.25 到 4.0 的语速
+    if voice_rate != 1.0:
+        payload["speed"] = max(0.25, min(4.0, voice_rate))
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    for current_url in urls_to_try:
+        for i in range(2):  # 对每个 URL 尝试 2 次
+            try:
+                logger.info(
+                    f"start openai tts, url: {current_url}, model: {model}, voice: {voice}, try: {i + 1}"
+                )
+                response = requests.post(current_url, json=payload, headers=headers)
+
+                # MaaS 平台生成成功可能返回 200 或 201 (Created)
+                if response.status_code in (200, 201):
+                    # 确保保存音频目录存在，然后写入音频二进制文件
+                    ensure_file_path_exists(voice_file)
+                    with open(voice_file, "wb") as f:
+                        f.write(response.content)
+
+                    # 初始化 SubMaker 兼容对象
+                    sub_maker = ensure_legacy_submaker_fields(SubMaker())
+
+                    # 获取音频实际长度并切分句子生成字幕偏移量
+                    try:
+                        from moviepy import AudioFileClip
+
+                        audio_clip = AudioFileClip(voice_file)
+                        audio_duration = audio_clip.duration
+                        audio_clip.close()
+
+                        audio_duration_100ns = int(audio_duration * 10000000)
+                        sentences = utils.split_string_by_punctuations(text)
+
+                        if sentences:
+                            total_chars = sum(len(s) for s in sentences)
+                            char_duration = (
+                                audio_duration_100ns / total_chars if total_chars > 0 else 0
+                            )
+
+                            current_offset = 0
+                            for sentence in sentences:
+                                if not sentence.strip():
+                                    continue
+                                sentence_chars = len(sentence)
+                                sentence_duration = int(sentence_chars * char_duration)
+                                sub_maker.subs.append(sentence)
+                                sub_maker.offset.append(
+                                    (current_offset, current_offset + sentence_duration)
+                                )
+                                current_offset += sentence_duration
+                        else:
+                            sub_maker.subs = [text]
+                            sub_maker.offset = [(0, audio_duration_100ns)]
+                    except Exception as e:
+                        logger.warning(f"Failed to create accurate subtitles: {str(e)}")
+                        sub_maker.subs = [text]
+                        sub_maker.offset = [
+                            (
+                                0,
+                                audio_duration_100ns
+                                if "audio_duration_100ns" in locals()
+                                else 10000000,
+                            )
+                        ]
+
+                    logger.success(f"openai tts succeeded: {voice_file}")
+                    return sub_maker
+                else:
+                    logger.error(
+                        f"openai tts failed for url {current_url} with status code {response.status_code}: {response.text}"
+                    )
+            except Exception as e:
+                logger.error(f"openai tts failed for url {current_url}: {str(e)}")
 
     return None
 

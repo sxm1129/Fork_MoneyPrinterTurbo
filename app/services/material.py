@@ -225,6 +225,363 @@ def save_video(video_url: str, save_dir: str = "") -> str:
     return ""
 
 
+def generate_images_flux(
+    task_id: str,
+    search_terms: List[str],
+    audio_duration: float,
+    max_clip_duration: int,
+    video_aspect: VideoAspect = VideoAspect.portrait,
+) -> List[str]:
+    import base64
+    import math
+    from openai import OpenAI
+
+    api_key = config.app.get("openai_api_key")
+    base_url = config.app.get("openai_base_url")
+    if not api_key:
+        raise ValueError("openai_api_key is not set in config.toml")
+
+    client = OpenAI(api_key=api_key, base_url=base_url)
+
+    num_clips = math.ceil(audio_duration / max_clip_duration)
+    if num_clips <= 0:
+        num_clips = 1
+
+    # Map selected VideoAspect ratio to optimal standard image generation dimensions:
+    # 9:16 (portrait) -> 1024x1792
+    # 16:9 (landscape) -> 1792x1024
+    # 1:1 (square) -> 1024x1024
+    img_size = "1024x1024"
+    if video_aspect:
+        aspect_str = video_aspect.value if hasattr(video_aspect, "value") else str(video_aspect)
+        if aspect_str == "9:16":
+            img_size = "1024x1792"
+        elif aspect_str == "16:9":
+            img_size = "1792x1024"
+        elif aspect_str == "1:1":
+            img_size = "1024x1024"
+
+    logger.info(
+        f"generating {num_clips} images ({img_size}) using flux-1-schnell for search terms: {search_terms}"
+    )
+
+    task_dir = utils.task_dir(task_id)
+    if not os.path.exists(task_dir):
+        os.makedirs(task_dir)
+
+    image_paths = []
+    for i in range(num_clips):
+        term = search_terms[i % len(search_terms)] if search_terms else "a beautiful scene"
+        prompt = f"A beautiful, high-quality, photorealistic depiction of: {term}. Cinematic lighting, highly detailed, 8k resolution."
+        logger.info(f"generating image {i+1}/{num_clips} with prompt: {prompt}")
+
+        try:
+            response = client.images.generate(
+                model="flux-1-schnell",
+                prompt=prompt,
+                n=1,
+                size=img_size
+            )
+            data = response.data[0]
+
+            # Save the image file
+            save_path = os.path.join(task_dir, f"flux-{i+1}.png")
+
+            if hasattr(data, "b64_json") and data.b64_json:
+                img_data = base64.b64decode(data.b64_json)
+                with open(save_path, "wb") as f:
+                    f.write(img_data)
+                logger.info(f"saved image from b64_json: {save_path}")
+                image_paths.append(save_path)
+            elif hasattr(data, "url") and data.url:
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+                }
+                res = requests.get(
+                    data.url,
+                    headers=headers,
+                    proxies=config.proxy,
+                    verify=_get_tls_verify(),
+                    timeout=60
+                )
+                with open(save_path, "wb") as f:
+                    f.write(res.content)
+                logger.info(f"saved image from url: {save_path}")
+                image_paths.append(save_path)
+            else:
+                logger.error(f"no url or b64_json returned in image generation for prompt: {prompt}")
+        except Exception as e:
+            logger.error(f"failed to generate image {i+1} using flux-1-schnell: {str(e)}")
+
+    return image_paths
+
+
+AI_VIDEO_MODELS = {
+    "happyhorse-1.0-t2v",
+    "happyhorse-1.0-i2v",
+    "wan2.7-i2v",
+    "volcengine/doubao-seedance-1.5-pro",
+}
+
+
+def generate_images_flux_for_video(
+    task_id: str,
+    search_terms: List[str],
+    num_clips: int,
+    video_aspect: VideoAspect = VideoAspect.portrait,
+) -> List[dict]:
+    import base64
+    from openai import OpenAI
+
+    api_key = config.app.get("openai_api_key")
+    base_url = config.app.get("openai_base_url")
+    if not api_key:
+        raise ValueError("openai_api_key is not set in config.toml")
+
+    client = OpenAI(api_key=api_key, base_url=base_url)
+
+    img_size = "1024x1024"
+    if video_aspect:
+        aspect_str = video_aspect.value if hasattr(video_aspect, "value") else str(video_aspect)
+        if aspect_str == "9:16":
+            img_size = "1024x1792"
+        elif aspect_str == "16:9":
+            img_size = "1792x1024"
+        elif aspect_str == "1:1":
+            img_size = "1024x1024"
+
+    logger.info(
+        f"generating {num_clips} flux starting images ({img_size}) for video model"
+    )
+
+    task_dir = utils.task_dir(task_id)
+    if not os.path.exists(task_dir):
+        os.makedirs(task_dir)
+
+    results = []
+    for i in range(num_clips):
+        term = search_terms[i % len(search_terms)] if search_terms else "a beautiful scene"
+        prompt = f"A beautiful, high-quality, photorealistic depiction of: {term}. Cinematic lighting, highly detailed, 8k resolution."
+        logger.info(f"generating image {i+1}/{num_clips} with prompt: {prompt}")
+
+        try:
+            response = client.images.generate(
+                model="flux-1-schnell",
+                prompt=prompt,
+                n=1,
+                size=img_size
+            )
+            data = response.data[0]
+            save_path = os.path.join(task_dir, f"flux-start-{i+1}.png")
+            remote_url = None
+
+            if hasattr(data, "url") and data.url:
+                remote_url = data.url
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+                }
+                res = requests.get(
+                    data.url,
+                    headers=headers,
+                    proxies=config.proxy,
+                    verify=_get_tls_verify(),
+                    timeout=60
+                )
+                with open(save_path, "wb") as f:
+                    f.write(res.content)
+                logger.info(f"saved starting image from url: {save_path}")
+            elif hasattr(data, "b64_json") and data.b64_json:
+                img_data = base64.b64decode(data.b64_json)
+                with open(save_path, "wb") as f:
+                    f.write(img_data)
+                logger.info(f"saved starting image from b64_json: {save_path}")
+            
+            results.append({
+                "local_path": save_path,
+                "remote_url": remote_url,
+                "prompt": term
+            })
+        except Exception as e:
+            logger.error(f"failed to generate starting image {i+1} using flux-1-schnell: {str(e)}")
+
+    return results
+
+
+def generate_videos_ai(
+    task_id: str,
+    search_terms: List[str],
+    model: str,
+    audio_duration: float,
+    max_clip_duration: int,
+    video_aspect: VideoAspect = VideoAspect.portrait,
+) -> List[str]:
+    import math
+    import time
+    
+    api_key = config.app.get("openai_api_key")
+    base_url = config.app.get("openai_base_url", "https://api-gateway.fusionxlink.com/v1").strip()
+    if not api_key:
+        raise ValueError("openai_api_key is not set in config.toml")
+
+    # Normalize base_url
+    if base_url.endswith("/v1"):
+        gateway_url = base_url
+    else:
+        gateway_url = f"{base_url}/v1" if not base_url.endswith("/") else f"{base_url}v1"
+
+    submit_url = f"{gateway_url}/video/generations"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    num_clips = math.ceil(audio_duration / max_clip_duration)
+    if num_clips <= 0:
+        num_clips = 1
+
+    logger.info(f"Preparing to generate {num_clips} AI video clips using model: {model}")
+
+    # Stage 1: Generate starting images for Image-to-Video models
+    is_i2v = model in ("happyhorse-1.0-i2v", "wan2.7-i2v")
+    starting_images = []
+    if is_i2v:
+        logger.info(f"Model {model} is Image-to-Video. Generating starting images first.")
+        starting_images = generate_images_flux_for_video(
+            task_id=task_id,
+            search_terms=search_terms,
+            num_clips=num_clips,
+            video_aspect=video_aspect
+        )
+
+    # Stage 2: Parallel Submission
+    jobs = []
+    for i in range(num_clips):
+        term = search_terms[i % len(search_terms)] if search_terms else "a beautiful scene"
+        prompt = f"A beautiful, high-quality, photorealistic depiction of: {term}. Cinematic style, smooth movement, highly detailed."
+        
+        payload = {
+            "model": model,
+            "prompt": prompt
+        }
+
+        # If Image-to-Video and starting image is successfully generated
+        if is_i2v and i < len(starting_images) and starting_images[i]["remote_url"]:
+            remote_url = starting_images[i]["remote_url"]
+            payload["image_url"] = remote_url
+            payload["img_url"] = remote_url
+            logger.info(f"Clip {i+1} using Flux image URL: {remote_url}")
+
+        try:
+            logger.info(f"Submitting video task {i+1}/{num_clips}...")
+            res = requests.post(
+                submit_url,
+                json=payload,
+                headers=headers,
+                proxies=config.proxy,
+                verify=_get_tls_verify(),
+                timeout=60
+            )
+            if res.status_code == 201 or res.status_code == 200:
+                res_json = res.json()
+                job_id = res_json.get("job_id")
+                if job_id:
+                    logger.info(f"Task {i+1} submitted successfully. Job ID: {job_id}")
+                    jobs.append({
+                        "index": i,
+                        "job_id": job_id,
+                        "prompt": prompt,
+                        "status": "pending",
+                        "video_url": None,
+                        "downloaded_path": None
+                    })
+                else:
+                    logger.error(f"Task {i+1} submission returned no job_id: {res.text}")
+            else:
+                logger.error(f"Task {i+1} submission failed with status {res.status_code}: {res.text}")
+        except Exception as e:
+            logger.error(f"Failed to submit task {i+1}: {str(e)}")
+
+    if not jobs:
+        logger.error("No AI video generation tasks were submitted successfully.")
+        return []
+
+    # Stage 3: Parallel Polling
+    logger.info("Entering parallel polling loop for AI video generation...")
+    material_directory = config.app.get("material_directory", "").strip()
+    if material_directory == "task":
+        material_directory = utils.task_dir(task_id)
+    elif material_directory and not os.path.isdir(material_directory):
+        material_directory = ""
+
+    finished_jobs = 0
+    total_jobs = len(jobs)
+    
+    # 30 attempts, 10s sleep each => 300s (5 minutes) timeout
+    for attempt in range(30):
+        time.sleep(10)
+        logger.info(f"[{attempt+1}/30] Polling active AI video jobs ({finished_jobs}/{total_jobs} complete)...")
+        
+        for job in jobs:
+            if job["status"] in ("succeeded", "failed"):
+                continue
+                
+            status_url = f"{gateway_url}/video/jobs/{job['job_id']}"
+            try:
+                res = requests.get(
+                    status_url,
+                    headers=headers,
+                    proxies=config.proxy,
+                    verify=_get_tls_verify(),
+                    timeout=30
+                )
+                if res.status_code == 200:
+                    res_json = res.json()
+                    status = res_json.get("status") or res_json.get("output", {}).get("task_status", "").lower()
+                    
+                    if status in ("succeeded", "success"):
+                        video_url = res_json.get("result_url") or res_json.get("output", {}).get("video_url")
+                        if video_url:
+                            logger.info(f"🎉 Job {job['job_id']} succeeded! Downloading video...")
+                            saved_path = save_video(video_url=video_url, save_dir=material_directory)
+                            if saved_path:
+                                job["downloaded_path"] = saved_path
+                                job["status"] = "succeeded"
+                                finished_jobs += 1
+                                logger.info(f"Saved video to: {saved_path}")
+                            else:
+                                job["status"] = "failed"
+                                finished_jobs += 1
+                                logger.error(f"Failed to save downloaded video for job {job['job_id']}")
+                        else:
+                            job["status"] = "failed"
+                            finished_jobs += 1
+                            logger.error(f"Job succeeded but no video url was found in response: {res_json}")
+                    elif status in ("failed", "error", "cancelled"):
+                        job["status"] = "failed"
+                        finished_jobs += 1
+                        logger.error(f"Job {job['job_id']} failed with upstream status: {status}")
+                    else:
+                        logger.info(f"Job {job['job_id']} status: {status}")
+                else:
+                    logger.warning(f"Error querying job {job['job_id']} status code {res.status_code}: {res.text}")
+            except Exception as e:
+                logger.error(f"Exception querying job {job['job_id']}: {str(e)}")
+
+        if finished_jobs >= total_jobs:
+            logger.info("All AI video generation tasks have finished.")
+            break
+
+    video_paths = []
+    for job in jobs:
+        if job["status"] == "succeeded" and job["downloaded_path"]:
+            video_paths.append(job["downloaded_path"])
+        else:
+            logger.warning(f"Clip {job['index']+1} (Job ID: {job['job_id']}) did not complete successfully.")
+
+    logger.success(f"Generated and downloaded {len(video_paths)}/{total_jobs} AI video clips.")
+    return video_paths
+
+
 def download_videos(
     task_id: str,
     search_terms: List[str],
@@ -234,6 +591,52 @@ def download_videos(
     audio_duration: float = 0.0,
     max_clip_duration: int = 5,
 ) -> List[str]:
+    if source in AI_VIDEO_MODELS:
+        video_paths = generate_videos_ai(
+            task_id=task_id,
+            search_terms=search_terms,
+            model=source,
+            audio_duration=audio_duration,
+            max_clip_duration=max_clip_duration,
+            video_aspect=video_aspect
+        )
+        return video_paths
+
+    if source == "flux-1-schnell":
+        # Generate raw images matching the selected video aspect ratio/size
+        image_paths = generate_images_flux(
+            task_id=task_id,
+            search_terms=search_terms,
+            audio_duration=audio_duration,
+            max_clip_duration=max_clip_duration,
+            video_aspect=video_aspect
+        )
+        if not image_paths:
+            logger.error("no images were generated using flux-1-schnell")
+            return []
+
+        # Convert generated images to MaterialInfo format
+        image_materials = []
+        for path in image_paths:
+            item = MaterialInfo()
+            item.provider = "flux-1-schnell"
+            item.url = path
+            item.duration = max_clip_duration
+            image_materials.append(item)
+
+        # Preprocess images to .mp4 videos using moviepy (adding zoom effect)
+        from app.services import video
+        logger.info("preprocessing generated flux images into video clips...")
+        processed_materials = video.preprocess_video(
+            materials=image_materials,
+            clip_duration=max_clip_duration
+        )
+
+        # Return processed video file paths
+        video_paths = [m.url for m in processed_materials if m.url.endswith(".mp4")]
+        logger.success(f"successfully preprocessed {len(video_paths)} flux video clips")
+        return video_paths
+
     valid_video_items = []
     valid_video_urls = []
     found_duration = 0.0
